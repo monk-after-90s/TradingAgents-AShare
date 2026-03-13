@@ -12,7 +12,6 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/docker-publish.yml'
-  # PR 期间仅作编译检查，不实际发布镜像（通过下方的 push: false 控制）
   pull_request:
     branches: [ "main" ]
     paths:
@@ -38,6 +37,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -58,13 +60,13 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=sha,format=short
-            # 只有当 Tag 满足纯数字版本号格式（如 v1.0.0）时，才标记为 latest
             type=match,pattern=^v[0-9]+\.[0-9]+\.[0-9]+$,group=0,value=latest
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
