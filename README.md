@@ -103,6 +103,7 @@ cd frontend && npm run dev
 docker pull ghcr.io/kylinmountain/tradingagents-ashare:latest
 docker run -d -p 8000:8000 \
   --name tradingagents \
+  -v $(pwd)/tradingagents.db:/app/tradingagents.db \
   -e TA_API_KEY="你的密钥" \
   -e TA_BASE_URL="https://api.openai.com/v1" \
   ghcr.io/kylinmountain/tradingagents-ashare:latest
