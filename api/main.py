@@ -1938,13 +1938,16 @@ if os.path.exists(dist_path):
 
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
-        # API requests should already be handled by previous routes
-        # If file exists in dist, serve it (e.g. favicon.ico)
-        file_path = os.path.join(dist_path, full_path)
-        if os.path.isfile(file_path):
-            return FileResponse(file_path)
+        # Security: Prevent path traversal by normalizing and checking boundaries
+        abs_dist_path = os.path.abspath(dist_path)
+        requested_path = os.path.abspath(os.path.join(abs_dist_path, full_path))
+        
+        # If the file exists and is within the dist directory, serve it
+        if os.path.isfile(requested_path) and os.path.commonpath([abs_dist_path, requested_path]) == abs_dist_path:
+            return FileResponse(requested_path)
+            
         # Otherwise fallback to index.html for SPA routing
-        return FileResponse(os.path.join(dist_path, "index.html"))
+        return FileResponse(os.path.join(abs_dist_path, "index.html"))
 
 
 def run() -> None:
