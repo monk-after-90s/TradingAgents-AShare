@@ -4,7 +4,6 @@ on:
   push:
     branches: [ "main" ]
     tags: [ 'v*' ]
-    # 路径过滤：只有当核心代码、前端或构建配置改变时才触发
     paths:
       - 'api/**'
       - 'tradingagents/**'
@@ -13,6 +12,7 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/docker-publish.yml'
+  # PR 期间仅作编译检查，不实际发布镜像（通过下方的 push: false 控制）
   pull_request:
     branches: [ "main" ]
     paths:
@@ -58,7 +58,8 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=sha,format=short
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # 只有当 Tag 满足纯数字版本号格式（如 v1.0.0）时，才标记为 latest
+            type=match,pattern=^v[0-9]+\.[0-9]+\.[0-9]+$,group=0,value=latest
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
