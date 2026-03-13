@@ -1926,6 +1926,27 @@ def update_runtime_config(
     }
 
 
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+# ─── Static Files & SPA Routing ──────────────────────────────────────────────
+
+# Mount frontend if dist exists
+dist_path = os.path.join(os.getcwd(), "frontend/dist")
+if os.path.exists(dist_path):
+    app.mount("/assets", StaticFiles(directory=os.path.join(dist_path, "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        # API requests should already be handled by previous routes
+        # If file exists in dist, serve it (e.g. favicon.ico)
+        file_path = os.path.join(dist_path, full_path)
+        if os.path.isfile(file_path):
+            return FileResponse(file_path)
+        # Otherwise fallback to index.html for SPA routing
+        return FileResponse(os.path.join(dist_path, "index.html"))
+
+
 def run() -> None:
     import uvicorn
 
