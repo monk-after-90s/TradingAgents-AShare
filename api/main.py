@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import queue
@@ -670,8 +671,9 @@ class AgentProgressTracker:
         "final_decision": "最终决策",
     }
     
-    def __init__(self, selected_analysts: List[str], job_id: str):
+    def __init__(self, selected_analysts: List[str], job_id: str, horizon: Optional[str] = None):
         self.job_id = job_id
+        self.horizon = horizon
         self.selected_analysts = [a.lower() for a in selected_analysts]
         self.status: Dict[str, str] = {}
         self.report_sections: Dict[str, Optional[str]] = {
@@ -716,6 +718,7 @@ class AgentProgressTracker:
                 "title": title,
                 "summary": summary,
                 "timestamp": _utcnow_iso(),
+                "horizon": self.horizon,
             },
         )
         print(f"[Milestone] {title}: {summary[:100]}...")
@@ -740,6 +743,7 @@ class AgentProgressTracker:
                     "chunk": para + '\n\n',
                     "index": i,
                     "is_complete": False,
+                    "horizon": self.horizon,
                 },
             )
         
@@ -752,6 +756,7 @@ class AgentProgressTracker:
                 "chunk": "",
                 "index": -1,
                 "is_complete": True,
+                "horizon": self.horizon,
             },
         )
 
@@ -760,7 +765,7 @@ class AgentProgressTracker:
         for team, members in FIXED_TEAMS.items():
             for m in members:
                 agents.append({"team": team, "agent": m, "status": self.status.get(m, "pending")})
-        return {"agents": agents}
+        return {"agents": agents, "horizon": self.horizon}
 
     def _set_status(self, agent: str, status: str) -> None:
         prev = self.status.get(agent)
@@ -770,7 +775,7 @@ class AgentProgressTracker:
         _emit_job_event(
             self.job_id,
             "agent.status",
-            {"agent": agent, "status": status, "previous_status": prev},
+            {"agent": agent, "status": status, "previous_status": prev, "horizon": self.horizon},
         )
 
     def _update_research_team_status(self, status: str) -> None:
@@ -827,6 +832,7 @@ class AgentProgressTracker:
                 "report": report_type,
                 "report_name": report_names.get(report_type, report_type),
                 "status": "writing",
+                "horizon": self.horizon,
             },
         )
 
@@ -962,7 +968,7 @@ def _generate_tool_description(tool_name: str, tool_args: Dict[str, Any]) -> str
     return f"调用 {tool_name}"
 
 
-def _run_job(
+async def _run_job(
     job_id: str,
     request: AnalyzeRequest,
     stream_events: bool = False,
@@ -978,18 +984,19 @@ def _run_job(
     db = SessionLocal()
     try:
         try:
-            report_service.init_report(
+            await asyncio.to_thread(
+                report_service.init_report,
                 db=db,
                 report_id=job_id,
                 symbol=normalized_symbol,
                 trade_date=request.trade_date,
                 user_id=user_id,
             )
-            report_service.update_report_partial(db, job_id, status="running")
-            db.commit()
+            await asyncio.to_thread(report_service.update_report_partial, db, job_id, status="running")
+            await asyncio.to_thread(db.commit)
         except Exception as e:
             print(f"CRITICAL: Failed to initialize report in DB: {e}")
-            db.rollback()
+            await asyncio.to_thread(db.rollback)
 
         _set_job(job_id, status="running", started_at=_utcnow_iso(), symbol=normalized_symbol)
         
@@ -1010,7 +1017,7 @@ def _run_job(
         _emit_job_event(job_id, "agent.snapshot", tracker.snapshot())
         
         # Build config using the active session
-        config = _build_runtime_config(request.config_overrides, user_id=user_id, db=db)
+        config = await asyncio.to_thread(_build_runtime_config, request.config_overrides, user_id=user_id, db=db)
         if request.dry_run:
             result = {
                 "mode": "dry_run",
@@ -1095,115 +1102,124 @@ def _run_job(
 
             horizon_states: Dict[str, Any] = {}
 
-            # 3. 按解析出的 horizons 依次走 stream()，事件实时推给前端
-            for horizon in request.horizons:
-                # 根据周期过滤 analyst，共享已采集的数据缓存
-                horizon_analysts = _get_horizon_analysts(horizon, request.selected_analysts)
-                horizon_graph = TradingAgentsGraph(
-                    selected_analysts=horizon_analysts,
-                    debug=False,
-                    config=config,
-                    data_collector=graph.data_collector,
-                )
-
-                horizon_label = "短线" if horizon == "short" else "中线"
-                _emit_job_event(job_id, "agent.horizon_start", {
-                    "horizon": horizon, "label": horizon_label,
-                })
-                # 每轮重置 tracker，前端进度条重新走一遍
-                tracker = AgentProgressTracker(horizon_analysts, job_id)
-                _emit_job_event(job_id, "agent.snapshot", tracker.snapshot())
-                # 告知前端本轮参与的 analyst 即将开始
-                for analyst_key in ANALYST_ORDER:
-                    if analyst_key in horizon_analysts:
-                        aname = ANALYST_AGENT_NAMES[analyst_key]
-                        tracker._set_status(aname, "in_progress")
-                        tracker._emit_writing_status(aname, ANALYST_REPORT_MAP[analyst_key])
-
-                args = horizon_graph.propagator.get_graph_args()
-                
-                # Use thread_id for LangGraph checkpointer persistence
-                if "config" not in args:
-                    args["config"] = {}
-                args["config"]["configurable"] = {"thread_id": f"{job_id}_{horizon}"}
-
-                init_state = horizon_graph.propagator.create_initial_state(
-                    ticker, request.trade_date,
-                    user_context=user_context_payload,
-                    selected_analysts=horizon_analysts,
-                    request_source=request_source,
-                    user_intent=user_intent, horizon=horizon,
-                )
-                last_report: Dict[str, str] = {}
-                seen: Dict[str, bool] = {}   # 追踪哪些字段已出现过，避免重复事件
-                horizon_final = None
-
+            async def _process_horizon(horizon: str):
+                """Async helper to run analysis for a single horizon."""
+                # Use a separate session for each parallel horizon to avoid race conditions
+                # since SessionLocal() produces a synchronous SQLAlchemy session.
+                h_db = SessionLocal()
                 try:
-                    for chunk in horizon_graph.graph.stream(init_state, **args):
-                        horizon_final = chunk
-                        active_keys = [k for k, v in chunk.items() if v and k != "messages"]
-                        if active_keys:
-                            print(f"[Graph Chunk/{horizon}] keys={active_keys}")
+                    # 根据周期过滤 analyst，共享已采集的数据缓存
+                    horizon_analysts = _get_horizon_analysts(horizon, request.selected_analysts)
+                    horizon_graph = TradingAgentsGraph(
+                        selected_analysts=horizon_analysts,
+                        debug=False,
+                        config=config,
+                        data_collector=graph.data_collector,
+                    )
 
-                        # ── 并行感知的状态推进 ──────────────────
-                        # 1. 每个 analyst 报告首次出现 → completed
-                        for analyst_key in ANALYST_ORDER:
-                            if analyst_key not in horizon_analysts:
-                                continue
-                            rkey = ANALYST_REPORT_MAP[analyst_key]
+                    horizon_label = "短线" if horizon == "short" else "中线"
+                    _emit_job_event(job_id, "agent.horizon_start", {
+                        "horizon": horizon, "label": horizon_label,
+                    })
+                    # 每轮重置 tracker，前端进度条重新走一遍
+                    h_tracker = AgentProgressTracker(horizon_analysts, job_id, horizon=horizon)
+                    _emit_job_event(job_id, "agent.snapshot", h_tracker.snapshot())
+                    # 告知前端本轮参与的 analyst 即将开始
+                    for analyst_key in ANALYST_ORDER:
+                        if analyst_key in horizon_analysts:
                             aname = ANALYST_AGENT_NAMES[analyst_key]
-                            if chunk.get(rkey) and not seen.get(rkey):
-                                seen[rkey] = True
-                                tracker._set_status(aname, "completed")
+                            h_tracker._set_status(aname, "in_progress")
+                            h_tracker._emit_writing_status(aname, ANALYST_REPORT_MAP[analyst_key])
 
-                        # 2. game_theory_report 出现 → GTM completed, Bull 开始
-                        if chunk.get("game_theory_report") and not seen.get("game_theory_report"):
-                            seen["game_theory_report"] = True
-                            tracker._set_status(ANALYST_AGENT_NAMES["game_theory"], "completed")
-                            tracker._set_status(ANALYST_AGENT_NAMES["bull"], "in_progress")
+                    h_args = horizon_graph.propagator.get_graph_args()
+                    
+                    # Use thread_id for LangGraph checkpointer persistence
+                    if "config" not in h_args:
+                        h_args["config"] = {}
+                    h_args["config"]["configurable"] = {"thread_id": f"{job_id}_{horizon}"}
 
-                        # 3. research judge → 研究团队完成, Trader 开始
-                        debate = chunk.get("investment_debate_state") or {}
-                        if debate.get("judge_decision") and not seen.get("judge_decision"):
-                            seen["judge_decision"] = True
-                            for r_key in ["bull", "bear", "research_manager"]:
-                                tracker._set_status(ANALYST_AGENT_NAMES[r_key], "completed")
-                            tracker._set_status(ANALYST_AGENT_NAMES["trader"], "in_progress")
-                            tracker._emit_writing_status(ANALYST_AGENT_NAMES["trader"], "trader_investment_plan")
+                    init_state = horizon_graph.propagator.create_initial_state(
+                        ticker, request.trade_date,
+                        user_context=user_context_payload,
+                        selected_analysts=horizon_analysts,
+                        request_source=request_source,
+                        user_intent=user_intent, horizon=horizon,
+                    )
+                    last_report: Dict[str, str] = {}
+                    seen: Dict[str, bool] = {}   # 追踪哪些字段已出现过，避免重复事件
+                    horizon_final = None
 
-                        # 4. trader plan → Trader completed, 风控开始
-                        if chunk.get("trader_investment_plan") and not seen.get("trader_investment_plan"):
-                            seen["trader_investment_plan"] = True
-                            tracker._set_status(ANALYST_AGENT_NAMES["trader"], "completed")
-                            tracker._set_status(ANALYST_AGENT_NAMES["aggressive"], "in_progress")
+                    try:
+                        async for chunk in horizon_graph.graph.astream(init_state, **h_args):
+                            horizon_final = chunk
+                            active_keys = [k for k, v in chunk.items() if v and k != "messages"]
+                            if active_keys:
+                                print(f"[Graph Chunk/{horizon}] keys={active_keys}")
 
-                        # 5. risk judge → 风控全部完成
-                        risk = chunk.get("risk_debate_state") or {}
-                        if risk.get("judge_decision") and not seen.get("risk_judge_decision"):
-                            seen["risk_judge_decision"] = True
-                            for r_key in ["aggressive", "neutral", "conservative", "portfolio_manager"]:
-                                tracker._set_status(ANALYST_AGENT_NAMES[r_key], "completed")
-                        # ── end 并行感知 ────────────────────────────────────────────
+                            # ── 并行感知的状态推进 ──────────────────
+                            # 1. 每个 analyst 报告首次出现 → completed
+                            for analyst_key in ANALYST_ORDER:
+                                if analyst_key not in horizon_analysts:
+                                    continue
+                                rkey = ANALYST_REPORT_MAP[analyst_key]
+                                aname = ANALYST_AGENT_NAMES[analyst_key]
+                                if chunk.get(rkey) and not seen.get(rkey):
+                                    seen[rkey] = True
+                                    h_tracker._set_status(aname, "completed")
 
-                        # 报告分片推送与数据库即时更新
-                        db_updates = {}
-                        for key in report_keys:
-                            value = chunk.get(key)
-                            if value and value != last_report.get(key):
-                                last_report[key] = value
-                                db_updates[key] = str(value)
-                                tracker._emit_report_chunked(job_id, key, str(value))
-                        
-                        if db_updates:
-                            report_service.update_report_partial(db, job_id, **db_updates)
-                except Exception as e:
-                    print(f"Error during horizon streaming: {e}")
+                            # 2. game_theory_report 出现 → GTM completed, Bull 开始
+                            if chunk.get("game_theory_report") and not seen.get("game_theory_report"):
+                                seen["game_theory_report"] = True
+                                h_tracker._set_status(ANALYST_AGENT_NAMES["game_theory"], "completed")
+                                h_tracker._set_status(ANALYST_AGENT_NAMES["bull"], "in_progress")
 
-                horizon_states[horizon] = horizon_final
-                for agent, st in tracker.status.items():
-                    if st not in ("completed", "skipped"):
-                        tracker._set_status(agent, "completed")
-                _emit_job_event(job_id, "agent.horizon_done", {"horizon": horizon})
+                            # 3. research judge → 研究团队完成, Trader 开始
+                            debate = chunk.get("investment_debate_state") or {}
+                            if debate.get("judge_decision") and not seen.get("judge_decision"):
+                                seen["judge_decision"] = True
+                                for r_key in ["bull", "bear", "research_manager"]:
+                                    h_tracker._set_status(ANALYST_AGENT_NAMES[r_key], "completed")
+                                h_tracker._set_status(ANALYST_AGENT_NAMES["trader"], "in_progress")
+                                h_tracker._emit_writing_status(ANALYST_AGENT_NAMES["trader"], "trader_investment_plan")
+
+                            # 4. trader plan → Trader completed, 风控开始
+                            if chunk.get("trader_investment_plan") and not seen.get("trader_investment_plan"):
+                                seen["trader_investment_plan"] = True
+                                h_tracker._set_status(ANALYST_AGENT_NAMES["trader"], "completed")
+                                h_tracker._set_status(ANALYST_AGENT_NAMES["aggressive"], "in_progress")
+
+                            # 5. risk judge → 风控全部完成
+                            risk = chunk.get("risk_debate_state") or {}
+                            if risk.get("judge_decision") and not seen.get("risk_judge_decision"):
+                                seen["risk_judge_decision"] = True
+                                for r_key in ["aggressive", "neutral", "conservative", "portfolio_manager"]:
+                                    h_tracker._set_status(ANALYST_AGENT_NAMES[r_key], "completed")
+                            # ── end 并行感知 ────────────────────────────────────────────
+
+                            # 报告分片推送与数据库即时更新
+                            db_updates = {}
+                            for key in report_keys:
+                                value = chunk.get(key)
+                                if value and value != last_report.get(key):
+                                    last_report[key] = value
+                                    db_updates[key] = str(value)
+                                    h_tracker._emit_report_chunked(job_id, key, str(value))
+                            
+                            if db_updates:
+                                await asyncio.to_thread(report_service.update_report_partial, h_db, job_id, **db_updates)
+                    except Exception as e:
+                        print(f"Error during horizon streaming ({horizon}): {e}")
+
+                    horizon_states[horizon] = horizon_final
+                    for agent, st in h_tracker.status.items():
+                        if st not in ("completed", "skipped"):
+                            h_tracker._set_status(agent, "completed")
+                    _emit_job_event(job_id, "agent.horizon_done", {"horizon": horizon})
+                finally:
+                    h_db.close()
+
+            # 3. 按解析出的 horizons 并行运行 astream()，事件实时推给前端
+            await asyncio.gather(*[_process_horizon(h) for h in request.horizons])
 
             graph.data_collector.evict(ticker, request.trade_date)
 
@@ -1239,7 +1255,8 @@ def _run_job(
             # 会因为看到 status="completed" 而提前关闭流，导致 job.completed 事件丢失。
             structured = None
             try:
-                structured = report_service.extract_structured_data(
+                structured = await asyncio.to_thread(
+                    report_service.extract_structured_data,
                     final_trade_decision=primary_r.get("final_trade_decision", ""),
                     fundamentals_report=primary_r.get("fundamentals_report", ""),
                     config=config,
@@ -1247,7 +1264,8 @@ def _run_job(
             except Exception as e:
                 print(f"Structured extraction failed (non-fatal): {e}")
 
-            resolved = report_service.resolve_report_fields(
+            resolved = await asyncio.to_thread(
+                report_service.resolve_report_fields,
                 result_data=result,
                 confidence_override=structured.confidence if structured else None,
                 target_price_override=structured.target_price if structured else None,
@@ -1263,7 +1281,8 @@ def _run_job(
             # 自动保存报告到数据库
             if save_report:
                 try:
-                    report_service.create_report(
+                    await asyncio.to_thread(
+                        report_service.create_report,
                         db=db,
                         symbol=request.symbol,
                         trade_date=request.trade_date,
@@ -1278,9 +1297,9 @@ def _run_job(
                         report_id=job_id,
                         analyst_traces=result.get("analyst_traces"),
                     )
-                    db.commit()
+                    await asyncio.to_thread(db.commit)
                 except Exception as e:
-                    db.rollback()
+                    await asyncio.to_thread(db.rollback)
                     print(f"Failed to save report: {e}")
 
             # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
@@ -1330,7 +1349,7 @@ def _run_job(
             seen: Dict[str, bool] = {}
 
             try:
-                for chunk in graph.graph.stream(init_state, **args):
+                async for chunk in graph.graph.astream(init_state, **args):
                     final_state = chunk
                     # ── 并行感知的状态推进 ──────────────────
                     # 1. 每个 analyst 报告首次出现 → completed
@@ -1379,7 +1398,7 @@ def _run_job(
                             tracker._emit_report_chunked(job_id, key, str(value))
                     
                     if db_updates:
-                        report_service.update_report_partial(db, job_id, **db_updates)
+                        await asyncio.to_thread(report_service.update_report_partial, db, job_id, **db_updates)
                     
                     # 打印当前 chunk 包含哪些 key，方便追踪 agent 执行进度
                     active_keys = [k for k, v in chunk.items() if v and k != "messages"]
@@ -1429,7 +1448,8 @@ def _run_job(
             except Exception as e:
                 print(f"Error during default streaming: {e}")
         else:
-            final_state, _ = graph.propagate(
+            final_state, _ = await asyncio.to_thread(
+                graph.propagate,
                 request.symbol,
                 request.trade_date,
                 user_context=user_context_payload,
@@ -1454,7 +1474,8 @@ def _run_job(
         # 注意：_set_job(status="completed") 必须在此之后调用，否则 SSE 超时会提前关闭流
         structured = None
         try:
-            structured = report_service.extract_structured_data(
+            structured = await asyncio.to_thread(
+                report_service.extract_structured_data,
                 final_trade_decision=result.get("final_trade_decision", ""),
                 fundamentals_report=result.get("fundamentals_report", ""),
                 config=config,
@@ -1463,7 +1484,8 @@ def _run_job(
             print(f"Structured extraction failed (non-fatal): {e}")
 
         # 一次性解析所有字段（方向、信心、目标价等）
-        resolved = report_service.resolve_report_fields(
+        resolved = await asyncio.to_thread(
+            report_service.resolve_report_fields,
             result_data=result,
             confidence_override=structured.confidence if structured else None,
             target_price_override=structured.target_price if structured else None,
@@ -1482,7 +1504,8 @@ def _run_job(
         if save_report:
             try:
                 # 传入已解析的值，并指定 report_id 进行更新
-                report_service.create_report(
+                await asyncio.to_thread(
+                    report_service.create_report,
                     db=db,
                     symbol=request.symbol,
                     trade_date=request.trade_date,
@@ -1497,9 +1520,9 @@ def _run_job(
                     report_id=job_id,
                     analyst_traces=result.get("analyst_traces"),
                 )
-                db.commit()
+                await asyncio.to_thread(db.commit)
             except Exception as e:
-                db.rollback()
+                await asyncio.to_thread(db.rollback)
                 print(f"Failed to finalize report: {e}")
         # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
         _set_job(
@@ -1536,7 +1559,7 @@ def _run_job(
         
         # ── Persistent failure recording ──
         try:
-            report_service.mark_report_failed(db, job_id, f"{err_msg}\n\n{traceback.format_exc()}")
+            await asyncio.to_thread(report_service.mark_report_failed, db, job_id, f"{err_msg}\n\n{traceback.format_exc()}")
         except Exception as db_exc:
             print(f"Failed to record failure in DB: {db_exc}")
 
@@ -1957,7 +1980,7 @@ def get_hot_stocks(source: str = "em", limit: int = 30) -> Dict:
 
 
 @app.post("/v1/analyze", response_model=AnalyzeResponse)
-def analyze(
+async def analyze(
     request: AnalyzeRequest,
     current_user: UserDB = Depends(_require_api_user),
 ) -> AnalyzeResponse:
@@ -1983,7 +2006,7 @@ def analyze(
         "job.created",
         {"job_id": job_id, "symbol": request.symbol, "trade_date": request.trade_date},
     )
-    _executor.submit(_run_job, job_id, request, True, True, current_user.id, "api")
+    asyncio.create_task(_run_job(job_id, request, True, True, current_user.id, "api"))
     return AnalyzeResponse(job_id=job_id, status="pending", created_at=now)
 
 
@@ -2132,21 +2155,21 @@ def _ai_extract_symbol_and_date(
     return None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
 @app.post("/v1/chat/completions")
-def chat_completions(
+async def chat_completions(
     request: ChatCompletionRequest,
     current_user: UserDB = Depends(_require_api_user),
     db: Session = Depends(get_db),
 ):
     text = _extract_chat_text(request.messages)
-    config = _build_runtime_config(request.config_overrides, user_id=current_user.id, db=db)
+    config = await asyncio.to_thread(_build_runtime_config, request.config_overrides, user_id=current_user.id, db=db)
 
     # 单次 LLM 调用提取全部意图（避免 _run_job 里二次 LLM）
-    symbol, trade_date, horizons, focus_areas, specific_questions, inferred_user_context = _ai_extract_symbol_and_date(text, config)
+    symbol, trade_date, horizons, focus_areas, specific_questions, inferred_user_context = await asyncio.to_thread(_ai_extract_symbol_and_date, text, config)
 
     if not symbol:
         message = "抱歉，我没能从您的消息中识别出股票标的。请输入代码（如 600519.SH）或可识别的公司名称。"
         if request.stream:
-            def _error_stream():
+            async def _error_stream():
                 yield _sse_pack("job.failed", {"error": message})
                 yield "event: done\ndata: [DONE]\n\n"
             return StreamingResponse(
@@ -2211,7 +2234,7 @@ def chat_completions(
         "job.created",
         {"job_id": job_id, "symbol": analyze_req.symbol, "trade_date": analyze_req.trade_date},
     )
-    _executor.submit(_run_job, job_id, analyze_req, True, True, current_user.id, "chat")
+    asyncio.create_task(_run_job(job_id, analyze_req, True, True, current_user.id, "chat"))
 
     if request.stream:
         return StreamingResponse(
