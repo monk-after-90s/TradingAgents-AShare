@@ -1065,7 +1065,7 @@ async def _run_job(
                 user_intent["horizons"] = request.horizons
             else:
                 # 直接 POST /v1/analyze 时的兜底（无预解析 intent）
-                user_intent = _parse_intent(request.query, graph.quick_thinking_llm, fallback_ticker=ticker)
+                user_intent = await asyncio.to_thread(_parse_intent, request.query, graph.quick_thinking_llm, fallback_ticker=ticker)
                 if not request.horizons:
                     request.horizons = user_intent["horizons"]
                 user_intent["horizons"] = request.horizons
@@ -1087,7 +1087,7 @@ async def _run_job(
                 "description": f"预加载 {ticker} 近{lookback_label}数据…",
             })
             print(f"[DualHorizon] Collecting data for {ticker} {request.trade_date} (horizons={request.horizons})…")
-            graph.data_collector.collect(ticker, request.trade_date, horizons=request.horizons)
+            await asyncio.to_thread(graph.data_collector.collect, ticker, request.trade_date, horizons=request.horizons)
 
             _emit_job_event(job_id, "agent.tool_call", {
                 "agent": "数据采集", "tool": "data_collector",
