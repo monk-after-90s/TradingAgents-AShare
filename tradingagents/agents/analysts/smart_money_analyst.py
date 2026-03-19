@@ -23,7 +23,7 @@ def create_smart_money_analyst(llm, data_collector=None):
         except Exception as exc:
             return f"调用失败：{exc}"
 
-    def smart_money_analyst_node(state):
+    async def smart_money_analyst_node(state):
         current_date = state["trade_date"]
         ticker = state["company_of_interest"]
         print(f"[Smart Money Analyst] START {ticker} {current_date}")
@@ -66,7 +66,7 @@ def create_smart_money_analyst(llm, data_collector=None):
             )),
         ]
 
-        result = llm.invoke(messages)
+        result = await llm.ainvoke(messages)
         print(f"[Smart Money Analyst] DONE {ticker}, report length={len(result.content)}")
         verdict, confidence = _extract_verdict(result.content)
         return {

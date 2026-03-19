@@ -23,7 +23,7 @@ def create_fundamentals_analyst(llm, data_collector=None):
         except Exception as exc:
             return f"调用失败：{exc}"
 
-    def fundamentals_analyst_node(state):
+    async def fundamentals_analyst_node(state):
         current_date = state["trade_date"]
         ticker = state["company_of_interest"]
         horizon = state.get("horizon", "medium")
@@ -62,7 +62,7 @@ def create_fundamentals_analyst(llm, data_collector=None):
             )),
         ]
 
-        result = llm.invoke(messages)
+        result = await llm.ainvoke(messages)
         verdict, confidence = _extract_verdict(result.content)
         return {
             "fundamentals_report": result.content,

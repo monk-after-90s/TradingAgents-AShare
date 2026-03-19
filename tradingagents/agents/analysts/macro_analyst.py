@@ -23,7 +23,7 @@ def create_macro_analyst(llm, data_collector=None):
         except Exception as exc:
             return f"调用失败：{exc}"
 
-    def macro_analyst_node(state):
+    async def macro_analyst_node(state):
         current_date = state["trade_date"]
         ticker = state["company_of_interest"]
         print(f"[Macro Analyst] START {ticker} {current_date}")
@@ -64,7 +64,7 @@ def create_macro_analyst(llm, data_collector=None):
             )),
         ]
 
-        result = llm.invoke(messages)
+        result = await llm.ainvoke(messages)
         print(f"[Macro Analyst] DONE {ticker}, report length={len(result.content)}")
         verdict, confidence = _extract_verdict(result.content)
         return {

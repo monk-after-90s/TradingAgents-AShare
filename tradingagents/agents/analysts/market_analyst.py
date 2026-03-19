@@ -25,7 +25,7 @@ def _extract_verdict(text):
 
 
 def create_market_analyst(llm, data_collector=None):
-    def market_analyst_node(state):
+    async def market_analyst_node(state):
         current_date = state["trade_date"]
         ticker = state["company_of_interest"]
         horizon = state.get("horizon", "short")
@@ -66,7 +66,7 @@ def create_market_analyst(llm, data_collector=None):
             )),
         ]
 
-        result = llm.invoke(messages)
+        result = await llm.ainvoke(messages)
         verdict, confidence = _extract_verdict(result.content)
 
         return {
