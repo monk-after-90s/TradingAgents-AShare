@@ -2,6 +2,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
+from tradingagents.agents.utils.agent_states import current_tracker_var
 
 
 def _extract_verdict(text):
@@ -36,7 +37,7 @@ def create_macro_analyst(llm, data_collector=None):
 
         config = get_config()
         system_message = get_prompt("macro_system_message", config=config) or ""
-        horizon_ctx = build_horizon_context(horizon, focus_areas, specific_questions, "macro")
+        horizon_ctx = build_horizon_context(horizon, focus_areas, specific_questions, agent_type="macro")
 
         pool = data_collector.get(ticker, current_date) if data_collector else None
 
@@ -71,11 +72,19 @@ def create_macro_analyst(llm, data_collector=None):
             )),
         ]
 
-        result = await llm.ainvoke(messages)
-        print(f"[Macro Analyst] DONE {ticker}, report length={len(result.content)}")
-        verdict, confidence = _extract_verdict(result.content)
+        # ── 实现 Token 级流式输出 ──────────────────
+        tracker = current_tracker_var.get()
+        full_content = ""
+        async for chunk in llm.astream(messages):
+            content = chunk.content if hasattr(chunk, "content") else str(chunk)
+            full_content += content
+            if tracker:
+                tracker._emit_token("Macro Analyst", "macro_report", content)
+
+        print(f"[Macro Analyst] DONE {ticker}, report length={len(full_content)}")
+        verdict, confidence = _extract_verdict(full_content)
         return {
-            "macro_report": result.content,
+            "macro_report": full_content,
             "analyst_traces": [{
                 "agent": "macro_analyst",
                 "horizon": horizon,

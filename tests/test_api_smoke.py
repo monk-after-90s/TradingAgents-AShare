@@ -168,7 +168,6 @@ class TestChatCompletionsEndpoint:
                 "dry_run": True,
             })
         assert r.status_code == 200
-        assert r.status_code == 200
         body = r.json()
         # Non-stream returns OpenAI-compatible format with job_id embedded in content
         assert "choices" in body

@@ -2,6 +2,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
+from tradingagents.agents.utils.agent_states import current_tracker_var
 
 
 def _extract_verdict(text):
@@ -35,7 +36,7 @@ def create_news_analyst(llm, data_collector=None):
 
         config = get_config()
         system_message = get_prompt("news_system_message", config=config)
-        horizon_ctx = build_horizon_context(horizon, focus_areas, specific_questions, "news")
+        horizon_ctx = build_horizon_context(horizon, focus_areas, specific_questions, agent_type="news")
 
         pool = data_collector.get(ticker, current_date) if data_collector else None
 
@@ -74,10 +75,18 @@ def create_news_analyst(llm, data_collector=None):
             )),
         ]
 
-        result = await llm.ainvoke(messages)
-        verdict, confidence = _extract_verdict(result.content)
+        # ── 实现 Token 级流式输出 ──────────────────
+        tracker = current_tracker_var.get()
+        full_content = ""
+        async for chunk in llm.astream(messages):
+            content = chunk.content if hasattr(chunk, "content") else str(chunk)
+            full_content += content
+            if tracker:
+                tracker._emit_token("News Analyst", "news_report", content)
+
+        verdict, confidence = _extract_verdict(full_content)
         return {
-            "news_report": result.content,
+            "news_report": full_content,
             "analyst_traces": [{
                 "agent": "news_analyst",
                 "horizon": horizon,
