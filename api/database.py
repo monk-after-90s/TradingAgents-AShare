@@ -64,6 +64,7 @@ def init_db() -> None:
     """Initialize database tables."""
     Base.metadata.create_all(bind=engine)
     _ensure_report_schema()
+    _ensure_user_schema()
 
 
 def _ensure_report_schema() -> None:
@@ -87,6 +88,17 @@ def _ensure_report_schema() -> None:
                 conn.execute(text("ALTER TABLE reports ADD COLUMN game_theory_report TEXT"))
     except Exception as e:
         print(f"Warning: Failed to ensure report schema: {e}")
+
+
+def _ensure_user_schema() -> None:
+    """Add columns to users table for existing SQLite deployments without migrations."""
+    try:
+        with engine.begin() as conn:
+            columns = {row[1] for row in conn.execute(text("PRAGMA table_info(users)"))}
+            if "last_login_ip" not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN last_login_ip VARCHAR(45)"))
+    except Exception as e:
+        print(f"Warning: Failed to ensure user schema: {e}")
 
 
 # Report Model
@@ -175,6 +187,7 @@ class UserDB(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     last_login_at = Column(DateTime, nullable=True)
+    last_login_ip = Column(String(45), nullable=True)
 
 
 class EmailVerificationCodeDB(Base):

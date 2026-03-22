@@ -2937,8 +2937,8 @@ def request_login_code(request: AuthRequestCodeRequest, db: Session = Depends(ge
 
 
 @app.post("/v1/auth/verify-code", response_model=AuthVerifyCodeResponse)
-def verify_login_code(request: AuthVerifyCodeRequest, db: Session = Depends(get_db)):
-    user = auth_service.verify_login_code(db, request.email, request.code)
+def verify_login_code(body: AuthVerifyCodeRequest, request: Request, db: Session = Depends(get_db)):
+    user = auth_service.verify_login_code(db, body.email, body.code, client_ip=request.client.host)
     if not user:
         raise HTTPException(status_code=400, detail="验证码错误或已过期")
     access_token = auth_service.create_access_token(user)
