@@ -16,6 +16,10 @@ if DATABASE_URL.startswith("sqlite"):
         DATABASE_URL,
         connect_args={"check_same_thread": False},
         echo=False,
+        pool_size=10,
+        max_overflow=20,
+        pool_timeout=60,
+        pool_recycle=3600,
     )
 
     def _can_use_wal() -> bool:
