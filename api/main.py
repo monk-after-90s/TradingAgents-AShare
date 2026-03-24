@@ -39,8 +39,23 @@ from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy.orm import Session
 import pandas as pd
 
-from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, init_db, get_db, SessionLocal
+from api.database import UserDB, UserLLMConfigDB, ScheduledAnalysisDB, VersionStatsDB, init_db, get_db, SessionLocal
 from api.services import auth_service, report_service, token_service, watchlist_service, scheduled_service
+
+def _get_real_ip(request: Request) -> Optional[str]:
+    """Extract real client IP, preferring Cloudflare/proxy headers."""
+    if request is None:
+        return None
+    # Cloudflare Tunnel injects the real client IP here
+    ip = request.headers.get("CF-Connecting-IP")
+    if ip:
+        return ip.strip()
+    # Standard proxy header fallback
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else None
+
 
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
@@ -129,9 +144,21 @@ async def _scheduler_loop():
                     task.last_run_status = "running"
                 db.commit()
 
-                _log(f"[Scheduler] Launching {len(tasks)} tasks")
-                for task in tasks:
-                    _create_tracked_task(_run_scheduled_job(task, today))
+                # commit 后 SQLAlchemy 会 expire 属性，db.close() 后访问会抛
+                # DetachedInstanceError，所以这里拷贝成 dict 传给 job 函数
+                task_snapshots = [
+                    {
+                        "id": task.id,
+                        "user_id": task.user_id,
+                        "symbol": task.symbol,
+                        "horizon": task.horizon,
+                    }
+                    for task in tasks
+                ]
+
+                _log(f"[Scheduler] Launching {len(task_snapshots)} tasks")
+                for snap in task_snapshots:
+                    _create_tracked_task(_run_scheduled_job(snap, today))
             finally:
                 db.close()
 
@@ -139,36 +166,36 @@ async def _scheduler_loop():
             logger.error(f"[Scheduler] Error: {e}")
 
 
-async def _run_scheduled_job(task, trade_date: str):
-    """Execute a single scheduled analysis job with optional shared data collector."""
-    _log(f"[Scheduler] Running {task.symbol} for user={task.user_id}")
+async def _run_scheduled_job(task: dict, trade_date: str):
+    """Execute a single scheduled analysis job.
+
+    Args:
+        task: dict with keys id, user_id, symbol, horizon (plain values,
+              not an ORM instance, to avoid DetachedInstanceError).
+        trade_date: YYYY-MM-DD string.
+    """
+    task_id = task["id"]
+    user_id = task["user_id"]
+    symbol = task["symbol"]
+    horizon = task.get("horizon") or "short"
+
+    _log(f"[Scheduler] Running {symbol} for user={user_id}")
     job_id = uuid4().hex
     try:
         _ensure_job_event_queue(job_id)
 
-        # Load user LLM config
-        db = SessionLocal()
-        try:
-            user_config = db.query(UserLLMConfigDB).filter(
-                UserLLMConfigDB.user_id == task.user_id
-            ).first()
-        finally:
-            db.close()
-
         # 使用最近交易日（非交易日时回退到上一个交易日）
         from tradingagents.dataflows.trade_calendar import is_cn_trading_day, previous_cn_trading_day
         actual_trade_date = trade_date if is_cn_trading_day(trade_date) else previous_cn_trading_day(trade_date)
-        _log(f"[Scheduler] {task.symbol} trade_date={actual_trade_date} (requested={trade_date})")
+        _log(f"[Scheduler] {symbol} trade_date={actual_trade_date} (requested={trade_date})")
 
-        horizon = task.horizon or "short"
         req = AnalyzeRequest(
-            symbol=task.symbol,
+            symbol=symbol,
             trade_date=actual_trade_date,
             horizons=[horizon],
-            query=f"定时分析 {task.symbol}",
-            # 直接设置 user_intent，跳过 LLM 意图解析（省 30+ 秒）
+            query=f"定时分析 {symbol}",
             user_intent={
-                "ticker": task.symbol,
+                "ticker": symbol,
                 "horizons": [horizon],
                 "focus_areas": [],
                 "specific_questions": [],
@@ -176,22 +203,22 @@ async def _run_scheduled_job(task, trade_date: str):
             },
         )
 
-        await _run_job(job_id, req, user_id=task.user_id)
+        await _run_job(job_id, req, user_id=user_id)
 
         # Mark success
         db = SessionLocal()
         try:
-            scheduled_service.mark_run_success(db, task.id, trade_date, job_id)
+            scheduled_service.mark_run_success(db, task_id, trade_date, job_id)
         finally:
             db.close()
-        _log(f"[Scheduler] Completed {task.symbol}")
+        _log(f"[Scheduler] Completed {symbol}")
 
     except Exception as e:
         import traceback
-        logger.error(f"[Scheduler] Failed {task.symbol}: {e}\n{traceback.format_exc()}")
+        logger.error(f"[Scheduler] Failed {symbol}: {e}\n{traceback.format_exc()}")
         db = SessionLocal()
         try:
-            scheduled_service.mark_run_failed(db, task.id, trade_date)
+            scheduled_service.mark_run_failed(db, task_id, trade_date)
         finally:
             db.close()
     finally:
@@ -205,6 +232,20 @@ async def lifespan(app: FastAPI):
     init_db()
     _log("Database initialized.")
     _report_version_stats()
+    # 启动时把卡在 running 的定时任务重置，让它们今天可以重新触发
+    db = SessionLocal()
+    try:
+        stale = db.query(ScheduledAnalysisDB).filter(
+            ScheduledAnalysisDB.last_run_status == "running"
+        ).all()
+        if stale:
+            for item in stale:
+                item.last_run_status = "stale"
+                item.last_run_date = None  # 允许今天重新触发
+            db.commit()
+            _log(f"[Scheduler] Reset {len(stale)} stale 'running' tasks on startup.")
+    finally:
+        db.close()
     # Pre-load trade calendar (uses mini_racer/V8 which is not thread-safe)
     from tradingagents.dataflows.trade_calendar import _load_cn_trade_dates
     _load_cn_trade_dates()
@@ -2130,7 +2171,7 @@ _VS_RATE_INTERVAL = 3600  # at most once per hour per IP
 @app.post("/api/version-stats")
 def version_stats(payload: Dict[str, Any] = Body(...), request: Request = None, db: Session = Depends(get_db)):
     """Collect anonymous version statistics from deployed instances."""
-    remote_ip = request.client.host if request and request.client else None
+    remote_ip = _get_real_ip(request)
 
     # Rate limit by IP
     now = time.time()
@@ -2958,7 +2999,7 @@ def request_login_code(request: AuthRequestCodeRequest, db: Session = Depends(ge
 
 @app.post("/v1/auth/verify-code", response_model=AuthVerifyCodeResponse)
 def verify_login_code(body: AuthVerifyCodeRequest, request: Request, db: Session = Depends(get_db)):
-    user = auth_service.verify_login_code(db, body.email, body.code, client_ip=request.client.host if request.client else None)
+    user = auth_service.verify_login_code(db, body.email, body.code, client_ip=_get_real_ip(request))
     if not user:
         raise HTTPException(status_code=400, detail="验证码错误或已过期")
     access_token = auth_service.create_access_token(user)
