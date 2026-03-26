@@ -287,7 +287,8 @@ export default function Settings() {
 
                     <div>
                         <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">
-                            深度思考模型
+                            推理模型
+                            <span className="ml-1 text-xs text-slate-400 font-normal">用于深度分析、辩论等复杂任务</span>
                         </label>
                         <input
                             type="text"
@@ -301,7 +302,8 @@ export default function Settings() {
 
                     <div>
                         <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">
-                            快速推理模型
+                            常规模型
+                            <span className="ml-1 text-xs text-slate-400 font-normal">用于意图识别、JSON 提取等轻量任务</span>
                         </label>
                         <input
                             type="text"
