@@ -36,8 +36,8 @@
       <td width="50%"><img src="assets/web/detail.png" alt="研报详情"/><br><em>深度分析详情</em></td>
     </tr>
     <tr>
+      <td width="50%"><img src="assets/web/timer_analysis.png" alt="定时分析"/><br><em>定时分析</em></td>
       <td width="50%"><img src="assets/web/dashboard.png" alt="控制台"/><br><em>数据控制台</em></td>
-      <td width="50%"><img src="assets/web/settings.png" alt="系统设置"/><br><em>系统设置</em></td>
     </tr>
   </table>
 </div>
