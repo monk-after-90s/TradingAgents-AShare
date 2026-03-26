@@ -287,21 +287,6 @@ export default function Settings() {
 
                     <div>
                         <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">
-                            推理模型
-                            <span className="ml-1 text-xs text-slate-400 font-normal">用于深度分析、辩论等复杂任务</span>
-                        </label>
-                        <input
-                            type="text"
-                            value={deepThinkLlm}
-                            onChange={e => setDeepThinkLlm(e.target.value)}
-                            className="input w-full"
-                            placeholder="例如：gpt-4.1 / deepseek-reasoner / kimi-k2-0905-preview"
-                            disabled={configLoading}
-                        />
-                    </div>
-
-                    <div>
-                        <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">
                             常规模型
                             <span className="ml-1 text-xs text-slate-400 font-normal">用于意图识别、JSON 提取等轻量任务</span>
                         </label>
@@ -311,6 +296,21 @@ export default function Settings() {
                             onChange={e => setQuickThinkLlm(e.target.value)}
                             className="input w-full"
                             placeholder="例如：gpt-4.1-mini / deepseek-chat / moonshot-v1-8k"
+                            disabled={configLoading}
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">
+                            推理模型
+                            <span className="ml-1 text-xs text-slate-400 font-normal">用于深度分析、辩论等复杂任务</span>
+                        </label>
+                        <input
+                            type="text"
+                            value={deepThinkLlm}
+                            onChange={e => setDeepThinkLlm(e.target.value)}
+                            className="input w-full"
+                            placeholder="例如：gpt-4.1 / deepseek-reasoner / kimi-k2-0905-preview"
                             disabled={configLoading}
                         />
                     </div>
