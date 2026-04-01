@@ -7,15 +7,13 @@ Uses only ``requests`` (already a project dependency) + stdlib ``xml``.
 from __future__ import annotations
 
 import re
-import threading
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import requests
 
 _TIMEOUT = 12  # seconds per request
-_LOCK = threading.Lock()
 
 # ── RSS Sources ──────────────────────────────────────────────────────────────
 
@@ -27,20 +25,26 @@ _RSS_SOURCES: List[Dict[str, str]] = [
         "category": "trump",
     },
     {
-        "name": "Reuters World",
-        "url": "https://www.reutersagency.com/feed/?taxonomy=best-sectors&post_type=best",
+        "name": "CNBC World",
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362",
         "type": "rss",
         "category": "geopolitical",
     },
     {
-        "name": "BBC World",
-        "url": "http://feeds.bbci.co.uk/news/world/rss.xml",
+        "name": "Al Jazeera",
+        "url": "https://www.aljazeera.com/xml/rss/all.xml",
         "type": "rss",
         "category": "geopolitical",
     },
     {
         "name": "AP News",
         "url": "https://feedx.net/rss/ap.xml",
+        "type": "rss",
+        "category": "geopolitical",
+    },
+    {
+        "name": "France24",
+        "url": "https://www.france24.com/en/rss",
         "type": "rss",
         "category": "geopolitical",
     },
@@ -187,30 +191,44 @@ def fetch_geopolitical_news(
         "cn_flash": [],
     }
 
-    # ── Fetch RSS sources in sequence (thread-safe) ──
-    if "trump" in categories or "geopolitical" in categories:
-        with _LOCK:
+    # ── Fetch all sources in parallel ──
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _fetch_rss_source(src):
+        body = _fetch_url(src["url"])
+        if not body:
+            return src["category"], src["name"], []
+        items = _parse_rss(body, limit=limit_per_source)
+        for item in items:
+            item["source"] = src["name"]
+        return src["category"], src["name"], items
+
+    futures = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        # RSS feeds
+        if "trump" in categories or "geopolitical" in categories:
             for src in _RSS_SOURCES:
                 if src["category"] not in categories:
                     continue
-                body = _fetch_url(src["url"])
-                if body:
-                    items = _parse_rss(body, limit=limit_per_source)
-                    for item in items:
-                        item["source"] = src["name"]
-                    result[src["category"]].extend(items)
+                futures.append(executor.submit(_fetch_rss_source, src))
 
-    # ── Chinese flash news ──
-    if "cn_flash" in categories:
-        wscn = _fetch_wallstreetcn(limit=limit_per_source)
-        for item in wscn:
-            item["source"] = "华尔街见闻"
-        result["cn_flash"].extend(wscn)
+        # Chinese flash news
+        if "cn_flash" in categories:
+            futures.append(executor.submit(
+                lambda: ("cn_flash", "华尔街见闻", _fetch_wallstreetcn(limit=limit_per_source))
+            ))
+            futures.append(executor.submit(
+                lambda: ("cn_flash", "财联社电报", _fetch_cls_telegraph(limit=limit_per_source))
+            ))
 
-        cls_items = _fetch_cls_telegraph(limit=limit_per_source)
-        for item in cls_items:
-            item["source"] = "财联社电报"
-        result["cn_flash"].extend(cls_items)
+        for future in as_completed(futures):
+            try:
+                cat, source_name, items = future.result()
+                for item in items:
+                    item.setdefault("source", source_name)
+                result.setdefault(cat, []).extend(items)
+            except Exception:
+                pass
 
     # ── Format for LLM ──
     result["formatted"] = _format_for_llm(result)
