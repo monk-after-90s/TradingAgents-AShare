@@ -40,7 +40,7 @@ class GraphSetup:
         self.data_collector = data_collector
 
     def setup_graph(
-        self, selected_analysts=["market", "social", "news", "fundamentals", "macro", "smart_money"],
+        self, selected_analysts=["market", "social", "news", "fundamentals", "macro", "smart_money", "market_impact"],
         checkpointer=None
     ):
         """Set up and compile the agent workflow graph.
@@ -101,6 +101,13 @@ class GraphSetup:
             )
             tool_nodes["smart_money"] = self.tool_nodes["smart_money"]
             done_nodes["smart_money"] = analyst_done_node
+
+        if "market_impact" in selected_analysts:
+            analyst_nodes["market_impact"] = create_market_impact_analyst(
+                self.quick_thinking_llm, self.data_collector
+            )
+            tool_nodes["market_impact"] = self.tool_nodes["market_impact"]
+            done_nodes["market_impact"] = analyst_done_node
 
         # Create researcher and manager nodes
         bull_researcher_node = create_bull_researcher(

@@ -57,7 +57,7 @@ class TradingAgentsGraph:
 
     def __init__(
         self,
-        selected_analysts=["market", "social", "news", "fundamentals", "macro", "smart_money"],
+        selected_analysts=["market", "social", "news", "fundamentals", "macro", "smart_money", "market_impact"],
         debug=False,
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
@@ -233,6 +233,13 @@ class TradingAgentsGraph:
                     get_indicators,
                 ]
             ),
+            "market_impact": ToolNode(
+                [
+                    # Market impact analyst tools (geopolitical events)
+                    get_global_news,
+                    get_news,
+                ]
+            ),
         }
 
     def propagate(
@@ -360,6 +367,7 @@ class TradingAgentsGraph:
             "fundamentals_report": final_state.get("fundamentals_report", ""),
             "macro_report": final_state.get("macro_report", ""),
             "smart_money_report": final_state.get("smart_money_report", ""),
+            "market_impact_report": final_state.get("market_impact_report", ""),
         }
 
     @staticmethod
@@ -408,6 +416,7 @@ class TradingAgentsGraph:
             "fundamentals_report": final_state["fundamentals_report"],
             "macro_report": final_state.get("macro_report", ""),
             "smart_money_report": final_state.get("smart_money_report", ""),
+            "market_impact_report": final_state.get("market_impact_report", ""),
             "investment_debate_state": {
                 "bull_history": final_state["investment_debate_state"]["bull_history"],
                 "bear_history": final_state["investment_debate_state"]["bear_history"],

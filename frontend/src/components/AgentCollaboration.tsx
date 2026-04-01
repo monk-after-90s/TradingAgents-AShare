@@ -13,7 +13,7 @@ import { useAnalysisStore } from '@/stores/analysisStore'
 import type { AgentStatus } from '@/types'
 import {
     TrendingUp, MessageCircle, Newspaper, Calculator,
-    BarChart2, DollarSign, ArrowBigUp, ArrowBigDown,
+    BarChart2, DollarSign, Globe, ArrowBigUp, ArrowBigDown,
     Brain, Briefcase, Flame, Scale, Shield, CheckCircle2, Loader2,
 } from 'lucide-react'
 import { extractVerdict, type Verdict } from '@/utils/reportText'
@@ -38,6 +38,7 @@ const META: AgentMeta[] = [
     { name: 'Fundamentals Analyst', label: '基本面', goal: '财务报表与估值分析', section: 'fundamentals_report', Icon: Calculator, badgeBg: 'bg-emerald-100 dark:bg-emerald-500/20', badgeText: 'text-emerald-600 dark:text-emerald-400' },
     { name: 'Macro Analyst', label: '宏观', goal: '板块轮动与政策驱动分析', section: 'macro_report', Icon: BarChart2, badgeBg: 'bg-violet-100 dark:bg-violet-500/20', badgeText: 'text-violet-600 dark:text-violet-400' },
     { name: 'Smart Money Analyst', label: '主力资金', goal: '机构资金行为与龙虎榜', section: 'smart_money_report', Icon: DollarSign, badgeBg: 'bg-amber-100 dark:bg-amber-500/20', badgeText: 'text-amber-600 dark:text-amber-400' },
+    { name: 'Market Impact Analyst', label: '地缘冲击', goal: '战争关税制裁等外部冲击分析', section: 'market_impact_report', Icon: Globe, badgeBg: 'bg-rose-100 dark:bg-rose-500/20', badgeText: 'text-rose-600 dark:text-rose-400' },
     { name: 'Bull Researcher', label: '多头', goal: '评估投资价值与上行潜力', section: 'investment_plan', debate: 'research', Icon: ArrowBigUp, badgeBg: 'bg-emerald-100 dark:bg-emerald-500/20', badgeText: 'text-emerald-600 dark:text-emerald-400' },
     { name: 'Bear Researcher', label: '空头', goal: '评估下行风险与潜在危机', section: 'investment_plan', debate: 'research', Icon: ArrowBigDown, badgeBg: 'bg-rose-100 dark:bg-rose-500/20', badgeText: 'text-rose-600 dark:text-rose-400' },
     { name: 'Research Manager', label: '研究总监', goal: '综合多空论据形成投资计划', section: 'investment_plan', debate: 'research', Icon: Brain, badgeBg: 'bg-indigo-100 dark:bg-indigo-500/20', badgeText: 'text-indigo-600 dark:text-indigo-400' },

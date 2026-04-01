@@ -452,13 +452,14 @@ FIXED_TEAMS = {
         "Fundamentals Analyst",
         "Macro Analyst",
         "Smart Money Analyst",
+        "Market Impact Analyst",
     ],
     "Research Team": ["Bull Researcher", "Bear Researcher", "Research Manager"],
     "Trading Team": ["Trader"],
     "Risk Management": ["Aggressive Analyst", "Neutral Analyst", "Conservative Analyst"],
     "Portfolio Management": ["Portfolio Manager"],
 }
-ANALYST_ORDER = ["market", "social", "news", "fundamentals", "macro", "smart_money"]
+ANALYST_ORDER = ["market", "social", "news", "fundamentals", "macro", "smart_money", "market_impact"]
 ANALYST_AGENT_NAMES = {
     "market": "Market Analyst",
     "social": "Social Analyst",
@@ -466,6 +467,7 @@ ANALYST_AGENT_NAMES = {
     "fundamentals": "Fundamentals Analyst",
     "macro": "Macro Analyst",
     "smart_money": "Smart Money Analyst",
+    "market_impact": "Market Impact Analyst",
     "bull": "Bull Researcher",
     "bear": "Bear Researcher",
     "Bull_Initial": "Bull Researcher",
@@ -486,6 +488,7 @@ ANALYST_REPORT_MAP = {
     "fundamentals": "fundamentals_report",
     "macro": "macro_report",
     "smart_money": "smart_money_report",
+    "market_impact": "market_impact_report",
 }
 
 # All analysts always run — each uses its own natural time window
@@ -539,7 +542,7 @@ class AnalyzeRequest(UserContextInput):
     symbol: str = Field(default="", description="股票代码，如 600519.SH（当 query 包含代码时可省略）")
     trade_date: str = Field(default_factory=cn_today_str, description="交易日期 YYYY-MM-DD")
     selected_analysts: List[str] = Field(
-        default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money"]
+        default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money", "market_impact"]
     )
     config_overrides: Dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = False
@@ -577,7 +580,7 @@ class ChatCompletionRequest(UserContextInput):
     messages: List[ChatMessage]
     stream: bool = True
     selected_analysts: List[str] = Field(
-        default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money"]
+        default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money", "market_impact"]
     )
     config_overrides: Dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = False
@@ -631,6 +634,7 @@ class ReportDetailResponse(ReportResponse):
     fundamentals_report: Optional[str]
     macro_report: Optional[str]
     smart_money_report: Optional[str]
+    market_impact_report: Optional[str]
     game_theory_report: Optional[str]
     investment_plan: Optional[str]
     trader_investment_plan: Optional[str]
@@ -971,6 +975,7 @@ def _build_result_payload(final_state: Dict[str, Any]) -> Dict[str, Any]:
         "fundamentals_report": final_state.get("fundamentals_report"),
         "macro_report": final_state.get("macro_report"),
         "smart_money_report": final_state.get("smart_money_report"),
+        "market_impact_report": final_state.get("market_impact_report"),
         "game_theory_report": final_state.get("game_theory_report"),
         "game_theory_signals": final_state.get("game_theory_signals"),
         "analyst_traces": final_state.get("analyst_traces"),
@@ -1007,6 +1012,7 @@ class AgentProgressTracker:
             "fundamentals_report": None,
             "macro_report": None,
             "smart_money_report": None,
+            "market_impact_report": None,
             "game_theory_report": None,
             "investment_plan": None,
             "trader_investment_plan": None,
@@ -1511,7 +1517,7 @@ async def _run_job_inner(
 
             report_keys = (
                 "market_report", "sentiment_report", "news_report", "fundamentals_report",
-                "macro_report", "smart_money_report",
+                "macro_report", "smart_money_report", "market_impact_report",
                 "investment_plan", "trader_investment_plan", "final_trade_decision",
             )
 
@@ -1676,6 +1682,7 @@ async def _run_job_inner(
                 "fundamentals_report": primary_r.get("fundamentals_report", ""),
                 "macro_report": primary_r.get("macro_report", ""),
                 "smart_money_report": primary_r.get("smart_money_report", ""),
+                "market_impact_report": primary_r.get("market_impact_report", ""),
                 "analyst_traces": (
                     short_r.get("analyst_traces", []) + medium_r.get("analyst_traces", [])
                 ),
@@ -1774,6 +1781,7 @@ async def _run_job_inner(
                 "fundamentals_report",
                 "macro_report",
                 "smart_money_report",
+                "market_impact_report",
                 "investment_plan",
                 "trader_investment_plan",
                 "final_trade_decision",

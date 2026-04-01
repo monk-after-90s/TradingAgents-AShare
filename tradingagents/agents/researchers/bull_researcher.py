@@ -21,6 +21,7 @@ def create_bull_researcher(llm, memory):
         sentiment_report = state["sentiment_report"]
         news_report = state["news_report"]
         fundamentals_report = state["fundamentals_report"]
+        market_impact_report = state.get("market_impact_report", "")
         claims = investment_debate_state.get("claims", [])
         focus_claim_ids = investment_debate_state.get("focus_claim_ids", [])
         unresolved_claim_ids = investment_debate_state.get("unresolved_claim_ids", [])
@@ -45,6 +46,7 @@ def create_bull_researcher(llm, memory):
             sentiment_report=sentiment_report,
             news_report=news_report,
             fundamentals_report=fundamentals_report,
+            market_impact_report=market_impact_report,
             history=history,
             current_response=current_response,
             past_memory_str=past_memory_str,

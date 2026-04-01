@@ -1,7 +1,7 @@
 import { FormEvent, useState, useRef, useEffect } from 'react'
 import {
     Bot, Loader2, Send, Sparkles, Settings2, ChevronDown, ChevronUp, FileText, ChevronRight, Trash2,
-    TrendingUp, MessageCircle, Newspaper, Calculator, BarChart2, DollarSign,
+    TrendingUp, MessageCircle, Newspaper, Calculator, BarChart2, DollarSign, Globe,
     ArrowBigUp, ArrowBigDown, Brain, Briefcase, Flame, Scale, Shield, CheckCircle2,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -30,6 +30,7 @@ const ANALYST_OPTIONS = [
     { id: 'fundamentals', label: '基本面', description: '财务估值' },
     { id: 'macro', label: '宏观板块', description: '宏观经济' },
     { id: 'smart_money', label: '主力资金', description: '机构动向' },
+    { id: 'market_impact', label: '地缘冲击', description: '战争关税' },
 ]
 
 interface StreamEvent {
@@ -50,6 +51,7 @@ const REPORT_SECTION_TITLES: Record<string, string> = {
     fundamentals_report: '基本面分析报告',
     macro_report: '宏观分析报告',
     smart_money_report: '主力资金分析报告',
+    market_impact_report: '地缘冲击分析报告',
     investment_plan: '研究团队投资计划',
     trader_investment_plan: '交易员计划',
     final_trade_decision: '最终交易决策',
@@ -63,6 +65,7 @@ const SECTION_META: Record<string, { Icon: React.FC<{ className?: string }>; ico
     fundamentals_report:    { Icon: Calculator,    iconCls: 'text-emerald-500', bgCls: 'bg-emerald-100 dark:bg-emerald-500/20' },
     macro_report:           { Icon: BarChart2,     iconCls: 'text-violet-500',  bgCls: 'bg-violet-100 dark:bg-violet-500/20' },
     smart_money_report:     { Icon: DollarSign,    iconCls: 'text-amber-500',   bgCls: 'bg-amber-100 dark:bg-amber-500/20' },
+    market_impact_report:   { Icon: Globe,         iconCls: 'text-rose-500',    bgCls: 'bg-rose-100 dark:bg-rose-500/20' },
     investment_plan:        { Icon: Brain,         iconCls: 'text-indigo-500',  bgCls: 'bg-indigo-100 dark:bg-indigo-500/20' },
     trader_investment_plan: { Icon: Briefcase,     iconCls: 'text-orange-500',  bgCls: 'bg-orange-100 dark:bg-orange-500/20' },
     final_trade_decision:   { Icon: CheckCircle2,  iconCls: 'text-teal-500',    bgCls: 'bg-teal-100 dark:bg-teal-500/20' },
@@ -76,6 +79,7 @@ const AGENT_META_MAP: Record<string, { Icon: React.FC<{ className?: string }>; i
     'Fundamentals Analyst': { Icon: Calculator,    iconCls: 'text-emerald-500', bgCls: 'bg-emerald-100 dark:bg-emerald-500/20', label: '基本面' },
     'Macro Analyst':        { Icon: BarChart2,     iconCls: 'text-violet-500',  bgCls: 'bg-violet-100 dark:bg-violet-500/20', label: '宏观' },
     'Smart Money Analyst':  { Icon: DollarSign,    iconCls: 'text-amber-500',   bgCls: 'bg-amber-100 dark:bg-amber-500/20',  label: '主力资金' },
+    'Market Impact Analyst': { Icon: Globe,        iconCls: 'text-rose-500',    bgCls: 'bg-rose-100 dark:bg-rose-500/20',    label: '地缘冲击' },
     'Bull Researcher':      { Icon: ArrowBigUp,    iconCls: 'text-emerald-500', bgCls: 'bg-emerald-100 dark:bg-emerald-500/20', label: '多头' },
     'Bear Researcher':      { Icon: ArrowBigDown,  iconCls: 'text-rose-500',    bgCls: 'bg-rose-100 dark:bg-rose-500/20',    label: '空头' },
     'Research Manager':     { Icon: Brain,         iconCls: 'text-indigo-500',  bgCls: 'bg-indigo-100 dark:bg-indigo-500/20', label: '研究总监' },
@@ -147,13 +151,13 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
     const [selectedAnalysts, setSelectedAnalysts] = useState<string[]>(() => {
         try {
             const stored = localStorage.getItem('tradingagents-settings')
-            if (!stored) return ['market', 'social', 'news', 'fundamentals', 'macro', 'smart_money']
+            if (!stored) return ['market', 'social', 'news', 'fundamentals', 'macro', 'smart_money', 'market_impact']
             const parsed = JSON.parse(stored) as { defaultAnalysts?: string[] }
             if (Array.isArray(parsed.defaultAnalysts) && parsed.defaultAnalysts.length > 0) {
                 return parsed.defaultAnalysts
             }
         } catch {}
-        return ['market', 'social', 'news', 'fundamentals', 'macro', 'smart_money']
+        return ['market', 'social', 'news', 'fundamentals', 'macro', 'smart_money', 'market_impact']
     })
     // track which section IDs have been added to chatMessages and whether they're done
     const streamingReportIds = useRef<Map<string, boolean>>(new Map()) // section → isComplete
