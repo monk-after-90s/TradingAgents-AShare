@@ -7,6 +7,8 @@ Uses only ``requests`` (already a project dependency) + stdlib ``xml``.
 from __future__ import annotations
 
 import re
+import threading
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -14,6 +16,26 @@ from typing import Any, Dict, List, Optional
 import requests
 
 _TIMEOUT = 12  # seconds per request
+
+# ── TTL Cache ────────────────────────────────────────────────────────────────
+# Avoids hammering sources on repeated calls within the same analysis window.
+
+_CACHE_TTL = 300  # 5 minutes
+_cache_lock = threading.Lock()
+_cache: Dict[str, Any] = {}  # key → {"ts": float, "data": ...}
+
+
+def _get_cached(key: str) -> Optional[Any]:
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry and (time.time() - entry["ts"]) < _CACHE_TTL:
+            return entry["data"]
+    return None
+
+
+def _set_cached(key: str, data: Any) -> None:
+    with _cache_lock:
+        _cache[key] = {"ts": time.time(), "data": data}
 
 # ── RSS Sources ──────────────────────────────────────────────────────────────
 
@@ -185,6 +207,12 @@ def fetch_geopolitical_news(
     if categories is None:
         categories = ["trump", "geopolitical", "cn_flash"]
 
+    # Return cached result if still fresh (avoids rate-limiting)
+    cache_key = f"geo:{limit_per_source}:{','.join(sorted(categories))}"
+    cached = _get_cached(cache_key)
+    if cached is not None:
+        return cached
+
     result: Dict[str, List[Dict[str, str]]] = {
         "trump": [],
         "geopolitical": [],
@@ -232,6 +260,7 @@ def fetch_geopolitical_news(
 
     # ── Format for LLM ──
     result["formatted"] = _format_for_llm(result)
+    _set_cached(cache_key, result)
     return result
 
 
