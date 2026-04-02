@@ -4,19 +4,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
-from tradingagents.agents.utils.agent_states import current_tracker_var
-
-
-def _extract_verdict(text):
-    import re, json
-    m = re.search(r'<!--\s*VERDICT:\s*(\{.*?\})\s*-->', text, re.DOTALL)
-    if m:
-        try:
-            d = json.loads(m.group(1))
-            return d.get("direction", "中性"), "中"
-        except Exception:
-            pass
-    return "中性", "低"
+from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
 
 
 def create_market_impact_analyst(llm, data_collector=None):
@@ -46,6 +34,7 @@ def create_market_impact_analyst(llm, data_collector=None):
             global_news = pool.get("global_news", "无数据")
             stock_news = pool.get("news", "无数据")
             geopolitical_news = pool.get("geopolitical_news", "")
+            sector_context = pool.get("sector_context", "")
         else:
             from datetime import datetime, timedelta
             from tradingagents.agents.utils.agent_utils import get_global_news, get_news
@@ -73,6 +62,16 @@ def create_market_impact_analyst(llm, data_collector=None):
             except Exception:
                 pass
 
+            # Fallback: fetch sector context
+            sector_context = ""
+            try:
+                from tradingagents.dataflows.sector_db import get_sector_db
+                sdb = get_sector_db()
+                code = ticker.split(".")[0][-6:] if "." in ticker else ticker[-6:]
+                sector_context = sdb.format_stock_context(code)
+            except Exception:
+                pass
+
         # Build prompt with all data sources
         data_sections = [
             horizon_ctx,
@@ -80,9 +79,15 @@ def create_market_impact_analyst(llm, data_collector=None):
             f"以及 {ticker} 的相关新闻。\n",
         ]
 
+        if sector_context:
+            data_sections.append(
+                f"【{ticker} 板块与概念归属】\n{sector_context}\n"
+                "请重点评估当前地缘事件对该股票所属板块和概念的直接/间接冲击。\n"
+            )
+
         if geopolitical_news:
             data_sections.append(
-                f"【实时地缘政治数据 — Trump Truth Social / 国际通讯社 / 中文财经快讯】\n{geopolitical_news}\n"
+                f"【实时地缘政治数据 — Trump/Musk/国际通讯社/国内政策/中文财经快讯】\n{geopolitical_news}\n"
             )
 
         data_sections.append(f"【get_global_news — 全球新闻（akshare）】\n{global_news}\n")
@@ -106,7 +111,7 @@ def create_market_impact_analyst(llm, data_collector=None):
                 tracker._emit_token("Market Impact Analyst", "market_impact_report", content)
 
         print(f"[Market Impact Analyst] DONE {ticker}, report length={len(full_content)}")
-        verdict, confidence = _extract_verdict(full_content)
+        verdict, confidence = extract_verdict(full_content)
         return {
             "market_impact_report": full_content,
             "analyst_traces": [{
