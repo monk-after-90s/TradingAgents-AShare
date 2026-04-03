@@ -4593,10 +4593,6 @@ class FeedbackUnreadResponse(BaseModel):
     unread_count: int
 
 
-class AdminReplyRequest(BaseModel):
-    reply: str = Field(..., min_length=1, max_length=5000)
-
-
 def _fb_to_item(fb: FeedbackDB) -> FeedbackItem:
     return FeedbackItem(
         id=fb.id,
@@ -4667,47 +4663,6 @@ def mark_feedback_read(
     if not fb:
         raise HTTPException(404, "未找到该反馈")
     return {"ok": True}
-
-
-# ─── Admin feedback endpoints ───────────────────────────────────────────────
-# Protected by TA_ADMIN_KEY env var (simple shared secret for admin ops)
-
-def _require_admin(request: Request) -> None:
-    admin_key = os.getenv("TA_ADMIN_KEY", "").strip()
-    if not admin_key:
-        raise HTTPException(403, "管理员功能未配置 (TA_ADMIN_KEY)")
-    provided = (request.headers.get("X-Admin-Key") or "").strip()
-    if provided != admin_key:
-        raise HTTPException(403, "管理员密钥无效")
-
-
-@app.get("/v1/admin/feedbacks", response_model=FeedbackListResponse)
-def admin_list_feedbacks(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    request: Request = None,
-    db: Session = Depends(get_db),
-):
-    _require_admin(request)
-    items, total = feedback_service.list_all_feedbacks(db, page, page_size)
-    return FeedbackListResponse(total=total, feedbacks=[_fb_to_item(fb) for fb in items])
-
-
-@app.post("/v1/admin/feedbacks/{feedback_id}/reply", response_model=FeedbackItem)
-def admin_reply_feedback(
-    feedback_id: str,
-    req: AdminReplyRequest,
-    background_tasks: BackgroundTasks,
-    request: Request = None,
-    db: Session = Depends(get_db),
-):
-    _require_admin(request)
-    fb = feedback_service.admin_reply(db, feedback_id, req.reply)
-    if not fb:
-        raise HTTPException(404, "未找到该反馈")
-    # Send email notification in background
-    background_tasks.add_task(feedback_service.send_reply_notification, fb)
-    return _fb_to_item(fb)
 
 
 from fastapi.staticfiles import StaticFiles
