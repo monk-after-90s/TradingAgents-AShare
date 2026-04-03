@@ -414,6 +414,22 @@ class ScheduledAnalysisDB(Base):
     __table_args__ = (UniqueConstraint('user_id', 'symbol', name='uq_scheduled_user_symbol'),)
 
 
+class FeedbackDB(Base):
+    """User feedback / message board."""
+    __tablename__ = "feedbacks"
+
+    id = Column(String(36), primary_key=True, index=True)
+    user_id = Column(String(64), index=True, nullable=False)
+    user_email = Column(String(255), nullable=False)
+    subject = Column(String(200), nullable=False)
+    content = Column(Text, nullable=False)
+    admin_reply = Column(Text, nullable=True)
+    replied_at = Column(DateTime, nullable=True)
+    is_read = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
 class ImportedPortfolioPositionDB(Base):
     """Imported current holdings snapshot plus recent trade points for a symbol."""
 
