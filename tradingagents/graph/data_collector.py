@@ -407,6 +407,8 @@ class DataCollector:
             if count <= 0:
                 self._cache.pop(key, None)
                 self._refcounts.pop(key, None)
-                self._locks.pop(key, None)
+                # 不删除 _locks[key]：其他线程可能仍持有该锁的引用，
+                # 删除会导致新 collect() 创建新锁，破坏互斥。
+                # 锁对象很轻量，留着不影响内存。
             else:
                 self._refcounts[key] = count

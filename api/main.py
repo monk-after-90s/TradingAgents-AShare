@@ -1781,7 +1781,7 @@ async def _run_job(
     done, _ = await asyncio.wait({inner_task}, timeout=_JOB_TIMEOUT)
     if inner_task in done:
         # 正常完成（可能成功也可能异常）
-        if inner_task.exception():
+        if not inner_task.cancelled() and inner_task.exception():
             _log(f"[Job {job_id}] failed: {inner_task.exception()}")
         return
     # 超时：标记失败，但不 cancel 内部 task（避免 cancel 卡住）
@@ -1796,8 +1796,6 @@ async def _run_job(
     except Exception:
         pass
     _emit_job_event(job_id, "job.failed", {"job_id": job_id, "error": err_msg})
-    # 后台让 inner_task 自然结束，不阻塞调用方
-    inner_task.cancel()
 
 
 async def _run_job_inner(
@@ -1875,13 +1873,13 @@ async def _run_job_inner(
             )
             return
 
+        _shared_data_collector.ref(request.symbol, request.trade_date)
         graph = TradingAgentsGraph(
             selected_analysts=request.selected_analysts,
             debug=False,
             config=config,
             data_collector=_shared_data_collector,
         )
-        _shared_data_collector.ref(request.symbol, request.trade_date)
         final_state: Optional[Dict[str, Any]] = None
 
         # 强制单周期：多个 horizon 时只取第一个，避免 dual-horizon 双倍开销
@@ -2076,8 +2074,6 @@ async def _run_job_inner(
                     horizon_errors.append(f"{request.horizons[i]}: {r}")
             if horizon_errors:
                 raise RuntimeError(f"Horizon analysis failed: {'; '.join(horizon_errors)}")
-
-            graph.data_collector.evict(ticker, request.trade_date)
 
             short_r = graph._build_horizon_result("short", horizon_states.get("short") or {})
             medium_r = graph._build_horizon_result("medium", horizon_states.get("medium") or {})
@@ -2440,6 +2436,8 @@ async def _run_job_inner(
             "job.failed",
             {"job_id": job_id, "error": err_msg},
         )
+    finally:
+        _shared_data_collector.evict(request.symbol, request.trade_date)
 
 
 def _normalize_symbol(raw: str) -> str:
