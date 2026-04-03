@@ -39,8 +39,8 @@ from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy.orm import Session
 import pandas as pd
 
-from api.database import UserDB, UserLLMConfigDB, ScheduledAnalysisDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, init_db, get_db, get_db_ctx
-from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service
+from api.database import UserDB, UserLLMConfigDB, ScheduledAnalysisDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, init_db, get_db, get_db_ctx
+from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service
 
 def _get_real_ip(request: Request) -> Optional[str]:
     """Extract real client IP, preferring Cloudflare/proxy headers."""
@@ -4558,6 +4558,48 @@ def delete_scheduled_analysis(
 ):
     if not scheduled_service.delete_scheduled(db, current_user.id, item_id):
         raise HTTPException(404, "未找到该定时任务")
+
+
+# ─── Sponsor endpoints (public, no auth) ────────────────────────────────────
+
+
+class SponsorItem(BaseModel):
+    id: str
+    sponsor_type: str
+    name: str
+    github: Optional[str] = None
+    avatar: Optional[str] = None
+    email: Optional[str] = None
+    provider: Optional[str] = None
+    date: str
+    # NOTE: amount is intentionally excluded from the public API
+
+
+class SponsorsResponse(BaseModel):
+    money: List[SponsorItem]
+    token: List[SponsorItem]
+
+
+def _sponsor_to_item(s: SponsorDB) -> SponsorItem:
+    return SponsorItem(
+        id=s.id,
+        sponsor_type=s.sponsor_type,
+        name=s.name,
+        github=s.github,
+        avatar=s.avatar,
+        email=s.email,
+        provider=s.provider,
+        date=s.date,
+    )
+
+
+@app.get("/v1/sponsors", response_model=SponsorsResponse)
+def list_sponsors(db: Session = Depends(get_db)):
+    """Public endpoint: list all visible sponsors grouped by type."""
+    all_sponsors = sponsor_service.list_sponsors(db)
+    money = [_sponsor_to_item(s) for s in all_sponsors if s.sponsor_type == "money"]
+    token = [_sponsor_to_item(s) for s in all_sponsors if s.sponsor_type == "token"]
+    return SponsorsResponse(money=money, token=token)
 
 
 # ─── Feedback endpoints ─────────────────────────────────────────────────────
