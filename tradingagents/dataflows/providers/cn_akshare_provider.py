@@ -14,6 +14,12 @@ from ..trade_calendar import cn_market_phase, cn_no_data_reason, cn_today_str, i
 # ── akshare 并发控制 ──
 # 总并发上限 5（防反爬 + akshare 全局状态安全）
 # 定时任务最多占 3 个槽位，保证前端至少有 2 个槽位可用
+#
+# 关键设计：僵尸线程回收
+# _run_job 超时后不会 cancel 内部线程（避免 cancel 卡在 to_thread），
+# 导致僵尸线程可能永远持有 semaphore permit。_AkshareLock 通过追踪每个
+# permit 的持有时间，在超过 STALE_TIMEOUT 后自动回收，防止锁被耗尽。
+
 _is_scheduled_task: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "is_scheduled_task", default=False,
 )
@@ -24,31 +30,94 @@ def set_scheduled_task_context(value: bool = True) -> contextvars.Token:
     return _is_scheduled_task.set(value)
 
 
-class _PriorityAwareLock:
-    """akshare 并发锁：定时任务受额外并发限制，前端任务优先。
+import logging as _logging
 
-    用法与 threading.Semaphore 的 context manager 完全一致（``with lock:``）。
+_lock_logger = _logging.getLogger(__name__)
+
+
+class _AkshareLock:
+    """akshare 并发锁：前端优先 + 僵尸线程自动回收。
+
+    - 总并发上限 ``total``（防反爬）
+    - 定时任务额外受 ``scheduled_max`` 限制，为前端保留带宽
+    - 持锁超过 ``stale_timeout`` 秒的线程视为僵尸，permit 被自动回收
+    - 僵尸线程最终退出 ``with`` 块时不会 double-release（已被回收）
     """
+
+    ACQUIRE_TIMEOUT = 60   # 等待 slot 的最大秒数
+    STALE_TIMEOUT = 120    # 单次 akshare 调用不应超过 2 分钟，超过视为僵尸
 
     def __init__(self, total: int = 5, scheduled_max: int = 3):
         self._total = threading.Semaphore(total)
         self._scheduled = threading.Semaphore(scheduled_max)
+        self._holders: dict[int, tuple[float, bool]] = {}   # tid -> (mono_time, is_scheduled)
+        self._mu = threading.Lock()
+
+    # ── 僵尸回收 ──
+
+    def _reclaim_stale(self) -> int:
+        """回收超时持有者的 permit，返回回收数量。"""
+        now = time.monotonic()
+        reclaimed = 0
+        with self._mu:
+            stale = [
+                (tid, is_sched)
+                for tid, (t, is_sched) in self._holders.items()
+                if now - t > self.STALE_TIMEOUT
+            ]
+            for tid, is_sched in stale:
+                del self._holders[tid]
+                self._total.release()
+                if is_sched:
+                    self._scheduled.release()
+                reclaimed += 1
+        if reclaimed:
+            _lock_logger.warning("[AkshareLock] reclaimed %d stale permits from zombie threads", reclaimed)
+        return reclaimed
+
+    # ── context manager ──
+
+    def _acquire_or_reclaim(self, sem: threading.Semaphore, label: str) -> None:
+        """尝试获取 semaphore，超时后回收僵尸再重试一次。"""
+        if sem.acquire(timeout=self.ACQUIRE_TIMEOUT):
+            return
+        self._reclaim_stale()
+        if sem.acquire(timeout=10):
+            return
+        raise TimeoutError(f"akshare {label} slot acquire timeout after reclaim")
 
     def __enter__(self):
-        if _is_scheduled_task.get(False):
-            self._scheduled.acquire()
-            self._total.acquire()
-        else:
-            self._total.acquire()
+        is_scheduled = _is_scheduled_task.get(False)
+        try:
+            if is_scheduled:
+                self._acquire_or_reclaim(self._scheduled, "scheduled")
+                try:
+                    self._acquire_or_reclaim(self._total, "total")
+                except BaseException:
+                    self._scheduled.release()
+                    raise
+            else:
+                self._acquire_or_reclaim(self._total, "total")
+        except TimeoutError:
+            _lock_logger.error("[AkshareLock] acquire timeout (is_scheduled=%s)", is_scheduled)
+            raise
+        with self._mu:
+            self._holders[threading.get_ident()] = (time.monotonic(), is_scheduled)
         return self
 
     def __exit__(self, *exc_info):
-        self._total.release()
-        if _is_scheduled_task.get(False):
-            self._scheduled.release()
+        tid = threading.get_ident()
+        with self._mu:
+            info = self._holders.pop(tid, None)
+        if info is not None:
+            _, is_scheduled = info
+            self._total.release()
+            if is_scheduled:
+                self._scheduled.release()
+        # info is None → permit 已被 _reclaim_stale 回收，不 double-release
 
 
-AKSHARE_CALL_LOCK = _PriorityAwareLock(total=5, scheduled_max=3)
+AKSHARE_CALL_LOCK = _AkshareLock(total=5, scheduled_max=3)
 
 
 class CnAkshareProvider(BaseMarketDataProvider):
